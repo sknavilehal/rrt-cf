@@ -15,86 +15,126 @@ app.use(express.json());
 admin.initializeApp();
 console.log('✅ Firebase Admin SDK initialized successfully');
 
-// District discovery function based on coordinates (unchanged)
-function getDistrictFromCoordinates(latitude, longitude) {
-  // Check if this is a simulator location (San Francisco area) first
-  if (latitude >= 37.7 && latitude <= 37.8 && longitude >= -122.5 && longitude <= -122.3) {
-    console.log('Detected iOS Simulator location, using test district');
-    return 'bengaluru_urban'; // Return test district for simulator
-  }
-  
-  // Define major city boundaries across India
-  const districtBounds = [
-    // Karnataka Districts
-    { name: 'bengaluru_urban', bounds: { north: 13.15, south: 12.85, east: 77.75, west: 77.45 } },
-    { name: 'mysuru', bounds: { north: 12.5, south: 12.0, east: 76.8, west: 76.5 } },
-    { name: 'mangaluru', bounds: { north: 13.0, south: 12.7, east: 75.0, west: 74.7 } },
-    
-    // Maharashtra Districts
-    { name: 'mumbai', bounds: { north: 19.30, south: 18.90, east: 72.95, west: 72.75 } },
-    { name: 'pune', bounds: { north: 18.65, south: 18.45, east: 73.95, west: 73.75 } },
-    { name: 'nagpur', bounds: { north: 21.25, south: 21.05, east: 79.15, west: 78.95 } },
-    
-    // Delhi NCR
-    { name: 'new_delhi', bounds: { north: 28.88, south: 28.40, east: 77.35, west: 76.84 } },
-    { name: 'gurgaon', bounds: { north: 28.52, south: 28.38, east: 77.12, west: 76.95 } },
-    { name: 'noida', bounds: { north: 28.65, south: 28.45, east: 77.45, west: 77.25 } },
-    
-    // Tamil Nadu Districts
-    { name: 'chennai', bounds: { north: 13.23, south: 12.83, east: 80.35, west: 80.10 } },
-    { name: 'coimbatore', bounds: { north: 11.1, south: 10.9, east: 77.1, west: 76.9 } },
-    { name: 'madurai', bounds: { north: 9.95, south: 9.85, east: 78.15, west: 78.05 } },
-    
-    // West Bengal Districts
-    { name: 'kolkata', bounds: { north: 22.65, south: 22.45, east: 88.45, west: 88.25 } },
-    
-    // Telangana Districts
-    { name: 'hyderabad', bounds: { north: 17.55, south: 17.25, east: 78.65, west: 78.25 } },
-    
-    // Gujarat Districts
-    { name: 'ahmedabad', bounds: { north: 23.15, south: 22.95, east: 72.75, west: 72.45 } },
-    { name: 'surat', bounds: { north: 21.25, south: 21.15, east: 72.85, west: 72.75 } },
-    
-    // Rajasthan Districts
-    { name: 'jaipur', bounds: { north: 26.95, south: 26.85, east: 75.85, west: 75.75 } },
-    
-    // Uttar Pradesh Districts
-    { name: 'lucknow', bounds: { north: 26.95, south: 26.75, east: 81.05, west: 80.85 } },
-    { name: 'kanpur', bounds: { north: 26.55, south: 26.35, east: 80.45, west: 80.25 } },
-    
-    // Kerala Districts
-    { name: 'thiruvananthapuram', bounds: { north: 8.65, south: 8.45, east: 76.95, west: 76.75 } },
-    { name: 'kochi', bounds: { north: 10.05, south: 9.85, east: 76.35, west: 76.15 } },
-  ];
+const DEFAULT_DISTRICT = 'unknown';
+const REVERSE_GEOCODE_TIMEOUT_MS = 2500;
+const REVERSE_GEOCODE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const NOMINATIM_BASE_URL =
+  process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org/reverse';
+const NOMINATIM_USER_AGENT =
+  process.env.NOMINATIM_USER_AGENT || 'sos-alerts/1.0 (firebase-functions)';
+const reverseGeocodeCache = new Map();
 
-  // Check if location falls within any specific district
-  for (const district of districtBounds) {
-    const bounds = district.bounds;
-    if (latitude <= bounds.north && latitude >= bounds.south && 
-        longitude <= bounds.east && longitude >= bounds.west) {
-      return district.name;
+function normalizeDistrictName(name) {
+  if (!name || typeof name !== 'string') {
+    return null;
+  }
+
+  const asciiOnly = name
+    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x00-\x7F]/g, '');
+
+  const slug = asciiOnly
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return slug || null;
+}
+
+function pickDistrictFromAddress(address) {
+  if (!address) {
+    return null;
+  }
+
+  const districtLike =
+    address.district ||
+    address.state_district ||
+    address.county ||
+    address.city_district;
+  const localityLike =
+    address.city ||
+    address.town ||
+    address.village ||
+    address.municipality ||
+    address.suburb;
+  const stateLike = address.state || address.region;
+  const countryLike = address.country;
+
+  const directPick = normalizeDistrictName(districtLike || localityLike);
+  if (directPick) {
+    return directPick;
+  }
+
+  const statePick = normalizeDistrictName(stateLike);
+  if (statePick) {
+    return `${statePick}_general`;
+  }
+
+  const countryPick = normalizeDistrictName(countryLike);
+  if (countryPick) {
+    return `${countryPick}_general`;
+  }
+
+  return null;
+}
+
+async function reverseGeocodeDistrict(latitude, longitude) {
+  const cacheKey = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+  const cached = reverseGeocodeCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < REVERSE_GEOCODE_CACHE_TTL_MS) {
+    return { district: cached.district, source: 'cache' };
+  }
+
+  try {
+    const url = new URL(NOMINATIM_BASE_URL);
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('lat', latitude.toString());
+    url.searchParams.set('lon', longitude.toString());
+    url.searchParams.set('zoom', '10');
+    url.searchParams.set('addressdetails', '1');
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': NOMINATIM_USER_AGENT,
+        'Accept-Language': 'en'
+      },
+      signal: AbortSignal.timeout(REVERSE_GEOCODE_TIMEOUT_MS)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Nominatim error: ${response.status}`);
     }
-  }
 
-  // Fallback regional mapping for areas not covered by specific districts
-  // Karnataka regions
-  if (latitude >= 11.5 && latitude <= 18.5 && longitude >= 74.0 && longitude <= 78.5) {
-    return 'karnataka_general';
+    const data = await response.json();
+    const address = data?.address || null;
+    const district = pickDistrictFromAddress(address);
+
+    if (district) {
+      if (reverseGeocodeCache.size > 1000) {
+        reverseGeocodeCache.clear();
+      }
+      reverseGeocodeCache.set(cacheKey, { district, timestamp: Date.now() });
+      return { district, source: 'nominatim' };
+    }
+
+    return { district: DEFAULT_DISTRICT, source: 'nominatim-fallback' };
+  } catch (error) {
+    console.error('❌ Reverse geocoding failed:', error.message);
+    return { district: DEFAULT_DISTRICT, source: 'error' };
   }
-  // Maharashtra regions  
-  if (latitude >= 15.5 && latitude <= 22.0 && longitude >= 72.5 && longitude <= 80.5) {
-    return 'maharashtra_general';
+}
+
+// District discovery function based on coordinates (external reverse geocode)
+async function getDistrictFromCoordinates(latitude, longitude) {
+  const result = await reverseGeocodeDistrict(latitude, longitude);
+  if (result.district === DEFAULT_DISTRICT) {
+    console.warn(
+      `⚠️ Falling back to default district for (${latitude}, ${longitude})`
+    );
   }
-  // Tamil Nadu regions
-  if (latitude >= 8.0 && latitude <= 13.5 && longitude >= 76.5 && longitude <= 80.5) {
-    return 'tamil_nadu_general';
-  }
-  // Delhi NCR regions
-  if (latitude >= 28.0 && latitude <= 29.0 && longitude >= 76.5 && longitude <= 77.5) {
-    return 'delhi_ncr_general';
-  }
-  
-  return 'india_general'; // Ultimate fallback
+  return result.district;
 }
 
 // Health check endpoint (unchanged)
@@ -130,7 +170,7 @@ app.post('/api/sos', async (req, res) => {
     }
 
     // Determine district from coordinates
-    const district = getDistrictFromCoordinates(location.latitude, location.longitude);
+    const district = await getDistrictFromCoordinates(location.latitude, location.longitude);
     
     if (sos_type === 'stop') {
       console.log(`🛑 Stopping SOS alert: ${sos_id}`);
@@ -262,7 +302,7 @@ app.post('/api/sos', async (req, res) => {
 });
 
 // Get district information from coordinates (unchanged)
-app.post('/api/get-district', (req, res) => {
+app.post('/api/get-district', async (req, res) => {
   console.log('📍 District lookup request received:', req.body);
   
   try {
@@ -292,7 +332,7 @@ app.post('/api/get-district', (req, res) => {
     }
 
     // Get district from coordinates
-    const district = getDistrictFromCoordinates(latitude, longitude);
+    const district = await getDistrictFromCoordinates(latitude, longitude);
     
     console.log(`✅ District determined: ${district} for coordinates (${latitude}, ${longitude})`);
     
