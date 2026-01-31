@@ -156,6 +156,7 @@ app.post('/sos', async (req, res) => {
       apns: {
         payload: {
           aps: {
+            contentAvailable: true, 
             alert: {
               title: '🚨 Emergency Alert',
               body: `SOS alert in ${district.toUpperCase()} area`
@@ -202,38 +203,63 @@ app.post('/test-push', async (req, res) => {
     
     // Default to udupi if no district specified
     const targetDistrict = district || 'udupi';
-    const notificationTitle = title || '🧪 Test Notification';
-    const notificationBody = body || `This is a test push notification for ${targetDistrict} district`;
     
-    console.log(`🧪 Sending test notification to district: ${targetDistrict}`);
+    // Generate test SOS ID
+    const testSosId = 'test-sos';
     
-    // Prepare test FCM message
+    // Create test location data (sample coordinates for Udupi)
+    const testLocation = {
+      latitude: 13.3409,
+      longitude: 74.7421,
+      accuracy: 10
+    };
+    
+    // Create test user info
+    const testUserInfo = {
+      name: 'Test User',
+      district: targetDistrict,
+      location: `${targetDistrict.charAt(0).toUpperCase() + targetDistrict.slice(1)} Test Location`,
+      phone: '+91-XXXX-XXXX'
+    };
+    
+    const userName = title || testUserInfo.name;
+    const userLocation = body || testUserInfo.location;
+    
+    console.log(`🧪 Sending test SOS alert to district: ${targetDistrict}`);
+    
+    // Prepare test FCM message (matching SOS alert structure)
     const message = {
       topic: `district-${targetDistrict}`,
       notification: {
-        title: notificationTitle,
-        body: notificationBody
+        title: '🧪 Test Emergency Alert',
+        body: `Test alert. ${userName} • ${userLocation}`
       },
       data: {
-        type: 'test_notification',
+        type: 'sos_alert',
+        sos_id: testSosId,
         district: targetDistrict,
+        location: JSON.stringify(testLocation),
         timestamp: Date.now().toString(),
-        sender: 'test-endpoint'
+        userInfo: JSON.stringify(testUserInfo),
+        alertId: testSosId,
+        sender_id: 'test-endpoint'
       },
       android: {
         notification: {
           icon: 'ic_notification',
-          color: '#0066FF',
+          color: '#FF0000',
           sound: 'default',
-          priority: 'high'
+          priority: 'high',
+          defaultSound: true
         }
       },
       apns: {
         payload: {
           aps: {
+            contentAvailable: true, 
             alert: {
-              title: notificationTitle,
-              body: notificationBody
+              title: '🧪 Test Emergency Alert',
+              body: `Test SOS alert in ${targetDistrict.toUpperCase()} area`
             },
             sound: 'default',
             badge: 1
@@ -249,10 +275,15 @@ app.post('/test-push', async (req, res) => {
     
     res.json({ 
       success: true, 
-      message: 'Test notification sent successfully',
+      message: 'Test SOS alert sent successfully',
       messageId: response,
       topic: `district-${targetDistrict}`,
       district: targetDistrict,
+      alertId: testSosId,
+      testData: {
+        location: testLocation,
+        userInfo: testUserInfo
+      },
       timestamp: new Date().toISOString()
     });
     
