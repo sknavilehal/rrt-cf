@@ -25,7 +25,7 @@ app.get('/health', (req, res) => {
 });
 
 // SOS Alert endpoint (unchanged, but removed firebaseInitialized check)
-app.post('/api/sos', async (req, res) => {
+app.post('/sos', async (req, res) => {
   console.log('📡 SOS request received:', req.body);
   
   try {
@@ -193,25 +193,78 @@ app.post('/api/sos', async (req, res) => {
   }
 });
 
-// Test endpoint to manually trigger SOS (for testing) (unchanged)
-app.post('/api/test-sos', async (req, res) => {
-  const testData = {
-    sos_id: `test_sos_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    sos_type: 'sos_alert',
-    location: {
-      latitude: 12.9716,
-      longitude: 77.5946
-    },
-    userInfo: {
-      deviceId: 'test-device',
-      appVersion: '1.0.0'
-    },
-    timestamp: Date.now().toString()
-  };
+// Test push notification endpoint
+app.post('/test-push', async (req, res) => {
+  console.log('📡 Test push notification request received:', req.body);
   
-  // Forward to main SOS endpoint
-  req.body = testData;
-  return app._router.handle({ ...req, method: 'POST', url: '/api/sos' }, res);
+  try {
+    const { district, title, body } = req.body;
+    
+    // Default to udupi if no district specified
+    const targetDistrict = district || 'udupi';
+    const notificationTitle = title || '🧪 Test Notification';
+    const notificationBody = body || `This is a test push notification for ${targetDistrict} district`;
+    
+    console.log(`🧪 Sending test notification to district: ${targetDistrict}`);
+    
+    // Prepare test FCM message
+    const message = {
+      topic: `district-${targetDistrict}`,
+      notification: {
+        title: notificationTitle,
+        body: notificationBody
+      },
+      data: {
+        type: 'test_notification',
+        district: targetDistrict,
+        timestamp: Date.now().toString(),
+        sender: 'test-endpoint'
+      },
+      android: {
+        notification: {
+          icon: 'ic_notification',
+          color: '#0066FF',
+          sound: 'default',
+          priority: 'high'
+        }
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title: notificationTitle,
+              body: notificationBody
+            },
+            sound: 'default',
+            badge: 1
+          }
+        }
+      }
+    };
+
+    // Send FCM message
+    const response = await admin.messaging().send(message);
+    
+    console.log('✅ Test notification sent successfully:', response);
+    
+    res.json({ 
+      success: true, 
+      message: 'Test notification sent successfully',
+      messageId: response,
+      topic: `district-${targetDistrict}`,
+      district: targetDistrict,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Test notification error:', error);
+    
+    res.status(500).json({ 
+      error: 'Failed to send test notification',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // 404 handler (unchanged)
@@ -220,9 +273,8 @@ app.use((req, res) => {  // No path specified here—it's implied as catch-all
     error: 'Endpoint not found',
     availableEndpoints: [
       'GET /health',
-      'POST /api/sos',
-      'POST /api/get-district',
-      'POST /api/test-sos'
+      'POST /sos',
+      'POST /test-push',
     ]
   });
 });
