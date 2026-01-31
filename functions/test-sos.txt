@@ -1,0 +1,3 @@
+curl -X POST https://us-central1-rrt-sos.cloudfunctions.net/api/test-push \
+  -H "Content-Type: application/json" \
+  -d '{"district": "udupi"}'
