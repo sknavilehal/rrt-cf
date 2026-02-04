@@ -67,7 +67,7 @@ app.post('/sos', async (req, res) => {
         topic: `district-${district}`,
         notification: {
           title: '✅ Emergency Resolved',
-          body: `All good now. ${userName} • ${userLocation}.`
+          body: `All good now. ${userName} • ${userLocation}`
         },
         data: {
           type: 'sos_resolved',
@@ -89,7 +89,7 @@ app.post('/sos', async (req, res) => {
             aps: {
               alert: {
                 title: '✅ Emergency Resolved',
-                body: `Emergency situation in ${district.toUpperCase()} has been resolved`
+                body: `All good now. ${userName} • ${userLocation}`
               },
               sound: 'default',
               badge: 0
@@ -159,7 +159,7 @@ app.post('/sos', async (req, res) => {
             contentAvailable: true, 
             alert: {
               title: '🚨 Emergency Alert',
-              body: `SOS alert in ${district.toUpperCase()} area`
+              body: `Help needed. ${userName} • ${userLocation}`
             },
             sound: 'default',
             badge: 1
