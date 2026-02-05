@@ -87,6 +87,7 @@ app.post('/sos', async (req, res) => {
         apns: {
           payload: {
             aps: {
+              contentAvailable: true,
               alert: {
                 title: '✅ Emergency Resolved',
                 body: `All good now. ${userName} • ${userLocation}`
